@@ -19,6 +19,16 @@
 - Q: Who may call these operations? → A: No authentication for now; the API is reachable only
   from the trusted frontend/network; authentication is a later feature.
 
+### Session 2026-10-20
+
+- Q: Should the API offer fetching a single reservation by identifier? → A: Yes; a separate
+  fetch-by-identifier query returns the reservation whether active or cancelled (status included);
+  "not found" only for identifiers that never existed.
+- Q: Should listing include reservations that start before the period but overlap into it? → A:
+  No; only reservations whose start time is within [start, end) are listed.
+- Q: Must reservation start times align to a time grid? → A: Yes; whole hours only (minute
+  :00), seconds and fractions must be zero. (Revised from an earlier 30-minute grid.)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Create a reservation (Priority: P1)
@@ -41,8 +51,9 @@ the reservation still exists with the same details.
 2. **Given** a create request with a missing name, an invalid email, an invalid phone number, or
    an unknown service type, **When** it is submitted, **Then** nothing is stored and the response
    identifies each invalid field.
-3. **Given** a create request for a date and time in the past, **When** it is submitted, **Then**
-   it is rejected with a clear validation error.
+3. **Given** a create request for a date and time in the past, or one not on the hourly grid
+   (e.g. 10:30, 10:15 or 10:00:30), **When** it is submitted, **Then** it is rejected with a clear
+   validation error.
 4. **Given** an existing active reservation at a date and time, **When** another reservation is
    created for a time overlapping its 60-minute slot, **Then** it is rejected with a slot-conflict
    error and nothing is stored (FR-009).
@@ -121,6 +132,8 @@ listings and its time slot becomes free.
    reservations.
 2. **Given** an identifier that does not exist or was already deleted, **When** delete is
    requested, **Then** a "not found" error is returned and nothing changes.
+3. **Given** a deleted reservation, **When** it is fetched by its identifier, **Then** it is
+   returned with status cancelled and its cancellation time (FR-013).
 
 ---
 
@@ -128,8 +141,12 @@ listings and its time slot becomes free.
 
 - Reservation exactly on the start or end boundary of a listing period: start is inclusive, end is
   exclusive, so adjacent periods never return the same reservation twice.
+- Reservation starting before a listing period but running into it (e.g. 08:00 when listing from
+  08:30): not included; listing is by start time only.
 - Time zones: date/times are exchanged with an explicit offset and stored as absolute instants;
-  listing a period returns the same results regardless of the caller's time zone.
+  listing a period returns the same results regardless of the caller's time zone. The hourly
+  grid (FR-003) is checked on the absolute instant (UTC), which matches local :00 for any
+  whole-hour offset.
 - Very large listing periods: results are paginated rather than returned all at once.
 - Leading/trailing whitespace in name, email or phone is trimmed before validation; email
   comparison is case-insensitive.
@@ -151,21 +168,24 @@ listings and its time slot becomes free.
   reservation after create and update.
 - **FR-003**: System MUST validate input: name non-empty (max 200 characters); email in a valid
   address format (max 254 characters); phone number in international format (optional leading `+`,
-  7–15 digits, common separators allowed); date/time in the future at creation; service type one
-  of the currently offered types.
+  7–15 digits, common separators allowed); date/time in the future at creation and aligned to an
+  hourly grid (minute :00, zero seconds and fractions); service type one of the
+  currently offered types.
 - **FR-004**: System MUST support a list of service types that currently contains only "carwash"
   and can be extended later without changing how reservations are created, listed, updated or
   deleted.
-- **FR-005**: System MUST allow listing all active reservations whose date/time falls within a
-  requested period (start inclusive, end exclusive), ordered by date/time ascending, with
-  pagination.
+- **FR-005**: System MUST allow listing all active reservations whose start date/time falls within
+  a requested period (start inclusive, end exclusive), ordered by date/time ascending, with
+  pagination. A reservation that starts before the period is not listed, even if its slot runs
+  into the period.
 - **FR-006**: System MUST allow updating any subset of a reservation's fields, applying the same
   validation as creation to the changed fields.
 - **FR-007**: System MUST allow deleting a reservation by identifier. Deletion is a soft delete:
   the reservation is marked cancelled (with the time of cancellation) and retained for history,
   but is never returned by active listings, cannot be updated, and cannot be deleted again.
   "Active" means "not cancelled"; past reservations that were not cancelled remain active.
-- **FR-008**: Create, update, delete and list MUST each be offered as separate operations.
+- **FR-008**: Create, update, delete, list and fetch-by-identifier (FR-013) MUST each be offered
+  as separate operations.
 - **FR-009**: Active reservations MUST NOT overlap in time: the carwash serves one car at a time.
   Each service type has a fixed duration ("carwash" = 60 minutes); a reservation occupies
   [start, start + duration). A create or update that would overlap any other active reservation
@@ -179,6 +199,9 @@ listings and its time slot becomes free.
   customer personal data relies on the service being reachable only from the trusted frontend /
   network and on cross-origin access being limited to the frontend origin. Adding authentication
   is a separate, later feature.
+- **FR-013**: System MUST allow fetching a single reservation by its identifier. The result
+  includes the reservation's status, so both active and cancelled reservations are returned;
+  a "not found" error is returned only for identifiers that never existed.
 
 ### Key Entities
 
@@ -210,7 +233,7 @@ listings and its time slot becomes free.
 - A single carwash location is served; multi-location support is out of scope.
 - Payments, customer notifications (email/SMS confirmations) and reminders are out of scope.
 - Opening hours / business-hour restrictions on reservation times are out of scope for this
-  feature; any future date/time is accepted (subject to FR-009).
+  feature; any future date/time on the hourly grid is accepted (subject to FR-003 and FR-009).
 - Customers are not separate accounts; customer details are stored on each reservation.
 - Adding a new service type is an operator/data change, not something exposed through these
   operations.

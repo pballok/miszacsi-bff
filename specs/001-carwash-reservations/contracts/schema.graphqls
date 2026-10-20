@@ -1,0 +1,173 @@
+# GraphQL contract for 001-carwash-reservations.
+# This file is the design-time contract; at implementation it is copied to
+# internal/graph/schema/reservation.graphqls and gqlgen code is generated from it.
+
+"""
+An absolute instant in RFC 3339 format with an explicit offset,
+e.g. "2026-10-21T10:00:00+02:00". Inputs without an offset are rejected.
+"""
+scalar DateTime
+
+type Query {
+  """
+  Fetch one reservation by ID, active or cancelled.
+  Errors: NOT_FOUND (ID never existed), BAD_USER_INPUT (malformed ID).
+  """
+  reservation(id: ID!): Reservation
+
+  """
+  Active reservations whose start time is in [from, to), ordered by start time ascending.
+  Use first/after to page forward or last/before to page backward (not both).
+  Page size defaults to 20, maximum 100.
+  Errors: BAD_USER_INPUT with extensions.field for an invalid range, page size or cursor.
+  """
+  reservations(
+    from: DateTime!
+    to: DateTime!
+    first: Int
+    after: String
+    last: Int
+    before: String
+  ): ReservationConnection!
+}
+
+type Mutation {
+  createReservation(input: CreateReservationInput!): CreateReservationPayload!
+  updateReservation(input: UpdateReservationInput!): UpdateReservationPayload!
+  "Soft delete: marks the reservation cancelled and frees its slot."
+  deleteReservation(input: DeleteReservationInput!): DeleteReservationPayload!
+}
+
+# ---------------------------------------------------------------------------
+# Types
+
+type Reservation {
+  id: ID!
+  startsAt: DateTime!
+  "startsAt plus the service type's duration at the time of booking."
+  endsAt: DateTime!
+  customerName: String!
+  customerEmail: String!
+  customerPhone: String!
+  serviceType: ServiceType!
+  status: ReservationStatus!
+  "Set when status is CANCELLED."
+  cancelledAt: DateTime
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CANCELLED
+}
+
+type ServiceType {
+  "Stable code used in inputs, e.g. \"carwash\"."
+  code: String!
+  displayName: String!
+  durationMinutes: Int!
+}
+
+type ReservationConnection {
+  edges: [ReservationEdge!]!
+  pageInfo: PageInfo!
+}
+
+type ReservationEdge {
+  cursor: String!
+  node: Reservation!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+# ---------------------------------------------------------------------------
+# Inputs
+
+input CreateReservationInput {
+  "Must be in the future and on the hourly grid (:00, zero seconds)."
+  startsAt: DateTime!
+  customerName: String!
+  customerEmail: String!
+  customerPhone: String!
+  "Service type code, e.g. \"carwash\"."
+  serviceType: String!
+}
+
+"""
+Only supplied fields change. Omitted and null mean "keep the current value".
+For a reservation that has already started, only customer fields may change.
+"""
+input UpdateReservationInput {
+  id: ID!
+  startsAt: DateTime
+  customerName: String
+  customerEmail: String
+  customerPhone: String
+  serviceType: String
+}
+
+input DeleteReservationInput {
+  id: ID!
+}
+
+# ---------------------------------------------------------------------------
+# Payloads and typed errors
+# On success: reservation is set and errors is empty.
+# On a client-actionable failure: reservation is null and errors is non-empty.
+# Unexpected failures are top-level GraphQL errors with extensions.code INTERNAL_SERVER_ERROR.
+
+type CreateReservationPayload {
+  reservation: Reservation
+  "ValidationError or SlotConflictError."
+  errors: [UserError!]!
+}
+
+type UpdateReservationPayload {
+  reservation: Reservation
+  "ValidationError, NotFoundError or SlotConflictError."
+  errors: [UserError!]!
+}
+
+type DeleteReservationPayload {
+  "The cancelled reservation."
+  reservation: Reservation
+  "NotFoundError."
+  errors: [UserError!]!
+}
+
+interface UserError {
+  message: String!
+}
+
+type ValidationError implements UserError {
+  message: String!
+  "Input field name, e.g. \"customerEmail\"."
+  field: String!
+  code: ValidationErrorCode!
+}
+
+enum ValidationErrorCode {
+  REQUIRED
+  TOO_LONG
+  INVALID_FORMAT
+  IN_PAST
+  NOT_ON_GRID
+  UNKNOWN_SERVICE_TYPE
+  NOT_ALLOWED
+}
+
+"The reservation does not exist or is cancelled (for update/delete)."
+type NotFoundError implements UserError {
+  message: String!
+}
+
+"The requested slot overlaps another active reservation."
+type SlotConflictError implements UserError {
+  message: String!
+}
