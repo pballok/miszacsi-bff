@@ -40,7 +40,8 @@ docker build -t miszacsi-bff .
 ## Validation scenarios
 
 Use dates in the future; examples use `2030-01-15` with offset `+01:00`. Send requests to
-`POST /graphql` (or the playground).
+`POST /graphql` (or the playground). Times in the table are local (`+01:00`); responses return
+the same instants in UTC, e.g. `endsAt` 11:00 appears as `2030-01-15T10:00:00Z`.
 
 | # | Action | Expected | Spec |
 |---|---|---|---|

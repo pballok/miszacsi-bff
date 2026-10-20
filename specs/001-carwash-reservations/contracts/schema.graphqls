@@ -5,6 +5,7 @@
 """
 An absolute instant in RFC 3339 format with an explicit offset,
 e.g. "2026-10-21T10:00:00+02:00". Inputs without an offset are rejected.
+Outputs are always in UTC, e.g. "2026-10-21T08:00:00Z".
 """
 scalar DateTime
 
@@ -17,8 +18,9 @@ type Query {
 
   """
   Active reservations whose start time is in [from, to), ordered by start time ascending.
-  Use first/after to page forward or last/before to page backward (not both).
-  Page size defaults to 20, maximum 100.
+  Use first/after to page forward or last/before to page backward; forward and
+  backward arguments must not be mixed. Page size defaults to 20 (also when only
+  after or before is given), maximum 100.
   Errors: BAD_USER_INPUT with extensions.field for an invalid range, page size or cursor.
   """
   reservations(
@@ -101,6 +103,7 @@ input CreateReservationInput {
 
 """
 Only supplied fields change. Omitted and null mean "keep the current value".
+A supplied value equal to the current one also counts as unchanged.
 For a reservation that has already started, only customer fields may change.
 """
 input UpdateReservationInput {
@@ -137,7 +140,7 @@ type UpdateReservationPayload {
 type DeleteReservationPayload {
   "The cancelled reservation."
   reservation: Reservation
-  "NotFoundError."
+  "ValidationError (malformed id) or NotFoundError."
   errors: [UserError!]!
 }
 

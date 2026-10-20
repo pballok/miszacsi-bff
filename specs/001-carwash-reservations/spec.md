@@ -28,6 +28,19 @@
   No; only reservations whose start time is within [start, end) are listed.
 - Q: Must reservation start times align to a time grid? → A: Yes; whole hours only (minute
   :00), seconds and fractions must be zero. (Revised from an earlier 30-minute grid.)
+- Q: Should the API let the frontend ask which service types can be booked? → A: No; the
+  frontend keeps its own list of service-type codes; no service-type query in this feature.
+- Q: What happens when a page request mixes forward and backward paging arguments? → A:
+  Mixing forward arguments (page size + "after") with backward ones (page size + "before") is a
+  validation error; an "after" or "before" position alone pages in that direction with the
+  default page size (20).
+- Q: Should customer emails be stored as entered or lowercased? → A: Stored as entered (only
+  trimmed); no feature compares emails yet, so the case-insensitive comparison rule is dropped.
+- Q: Should national-format phone numbers be accepted as well as international ones? → A: Yes;
+  optional leading `+`, 7–15 digits, common separators; stored as entered, not normalized.
+- Q: Does a create request that leaves a required field out get a per-field validation error?
+  → A: No; "missing" means empty or whitespace-only (per-field `REQUIRED`); a field left out
+  entirely is rejected as a malformed request, since all create fields stay required.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -48,9 +61,10 @@ the reservation still exists with the same details.
 1. **Given** no reservations exist, **When** a reservation is created for a future date and time
    with name, valid email, valid phone number and service type "carwash", **Then** the reservation
    is stored and returned with a unique identifier and all submitted details.
-2. **Given** a create request with a missing name, an invalid email, an invalid phone number, or
-   an unknown service type, **When** it is submitted, **Then** nothing is stored and the response
-   identifies each invalid field.
+2. **Given** a create request with an empty (or whitespace-only) name, an invalid email, an
+   invalid phone number, or an unknown service type, **When** it is submitted, **Then** nothing is
+   stored and the response identifies each invalid field. (A request that leaves a required
+   field out entirely is rejected as a malformed request before field validation.)
 3. **Given** a create request for a date and time in the past, or one not on the hourly grid
    (e.g. 10:30, 10:15 or 10:00:30), **When** it is submitted, **Then** it is rejected with a clear
    validation error.
@@ -144,12 +158,14 @@ listings and its time slot becomes free.
 - Reservation starting before a listing period but running into it (e.g. 08:00 when listing from
   08:30): not included; listing is by start time only.
 - Time zones: date/times are exchanged with an explicit offset and stored as absolute instants;
-  listing a period returns the same results regardless of the caller's time zone. The hourly
+  listing a period returns the same results regardless of the caller's time zone. Returned
+  date/times are always expressed in UTC (`Z` offset); the frontend converts them for display. The hourly
   grid (FR-003) is checked on the absolute instant (UTC), which matches local :00 for any
   whole-hour offset.
 - Very large listing periods: results are paginated rather than returned all at once.
-- Leading/trailing whitespace in name, email or phone is trimmed before validation; email
-  comparison is case-insensitive.
+- Leading/trailing whitespace in name, email or phone is trimmed before validation; otherwise
+  values are stored exactly as entered (email letter case is preserved, e.g. `Anna@Example.HU`
+  is returned unchanged).
 - Two create requests for the same or overlapping slot arriving simultaneously: exactly one
   succeeds, the other receives a slot-conflict error (FR-009).
 - A reservation overlapping only a cancelled reservation: allowed.
@@ -167,8 +183,9 @@ listings and its time slot becomes free.
 - **FR-002**: System MUST assign each reservation a unique, stable identifier and return the full
   reservation after create and update.
 - **FR-003**: System MUST validate input: name non-empty (max 200 characters); email in a valid
-  address format (max 254 characters); phone number in international format (optional leading `+`,
-  7–15 digits, common separators allowed); date/time in the future at creation and aligned to an
+  address format (max 254 characters); phone number in international or national format (optional
+  leading `+`, 7–15 digits, separators space and `( ) . / -` allowed; stored as entered, not
+  normalized); date/time in the future at creation and aligned to an
   hourly grid (minute :00, zero seconds and fractions); service type one of the
   currently offered types.
 - **FR-004**: System MUST support a list of service types that currently contains only "carwash"
@@ -177,9 +194,12 @@ listings and its time slot becomes free.
 - **FR-005**: System MUST allow listing all active reservations whose start date/time falls within
   a requested period (start inclusive, end exclusive), ordered by date/time ascending, with
   pagination. A reservation that starts before the period is not listed, even if its slot runs
-  into the period.
+  into the period. A page request goes either forward (page size and/or "after" position) or
+  backward (page size and/or "before" position); mixing forward and backward arguments is a
+  validation error. A position given without a page size uses the default page size.
 - **FR-006**: System MUST allow updating any subset of a reservation's fields, applying the same
-  validation as creation to the changed fields.
+  validation as creation to the changed fields. A supplied value equal to the current one counts
+  as unchanged, so resending a full reservation with only some fields edited is accepted.
 - **FR-007**: System MUST allow deleting a reservation by identifier. Deletion is a soft delete:
   the reservation is marked cancelled (with the time of cancellation) and retained for history,
   but is never returned by active listings, cannot be updated, and cannot be deleted again.
@@ -212,6 +232,9 @@ listings and its time slot becomes free.
 - **Service Type**: a kind of service that can be reserved. Attributes: stable code (e.g.
   `carwash`), display name, duration (carwash: 60 minutes), whether it is currently offered. Initially the only entry is
   "carwash"; more will be added later. Each reservation references exactly one service type.
+- **Terms**: "delete" and "cancel" name the same action (the soft delete of FR-007; the
+  reservation's status becomes cancelled). The listing period's start and end are also called
+  "from" and "to".
 
 ## Success Criteria *(mandatory)*
 
@@ -219,13 +242,15 @@ listings and its time slot becomes free.
 
 - **SC-001**: A valid reservation can be created with a single request and appears in the listing
   for its period immediately afterwards (100% of cases).
-- **SC-002**: Listing a one-week period with up to 500 reservations returns the first page in under
-  1 second for the person using the frontend.
+- **SC-002**: Listing a one-week period containing 500 stored reservations (at most 168 of them
+  active, since slots cannot overlap; the rest cancelled) returns the first page in under 1 second,
+  measured at the BFF's HTTP endpoint.
 - **SC-003**: 100% of invalid inputs (per FR-003) are rejected with a message naming the offending
   field, and no invalid reservation is ever stored.
 - **SC-004**: Zero reservations are lost across service restarts or redeployments.
 - **SC-005**: Adding a second service type requires no change to the create, list, update or delete
-  operations as seen by the frontend, other than the new value becoming accepted.
+  operations as seen by the frontend, other than the new value becoming accepted. (The
+  frontend's own list of selectable codes is updated separately; see Assumptions.)
 
 ## Assumptions
 
@@ -236,7 +261,8 @@ listings and its time slot becomes free.
   feature; any future date/time on the hourly grid is accepted (subject to FR-003 and FR-009).
 - Customers are not separate accounts; customer details are stored on each reservation.
 - Adding a new service type is an operator/data change, not something exposed through these
-  operations.
+  operations. The API offers no way to list service types; the frontend keeps its own list of
+  selectable codes and must be updated when a type is added or retired (accepted limitation).
 - Retention of past and cancelled reservations follows normal practice for a small business;
   automatic purging is out of scope.
 - Until authentication is added, the API is deployed so that only the MiSzaCsi frontend (or a

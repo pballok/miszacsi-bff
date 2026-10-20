@@ -56,12 +56,13 @@ at a time); thousands of rows per year including cancelled ones
 | III. PostgreSQL as SSoT | ✅ Pass | Stateless process; service types (runtime-mutable config) in DB; golang-migrate up/down migrations embedded and applied on startup; sqlc + pgx/v5 only; update/delete in one transaction with row lock; PK, FK, `NOT NULL`, check constraints, exclusion constraint and partial index express the invariants. No extensions needed (GiST on `tstzrange` is core). |
 | IV. Containerised by Default | ✅ Pass | Multi-stage Dockerfile → distroless `nonroot`; `compose.yaml` with `bff` + `postgres:19` and named volume `pgdata`; env config validated at startup (fail fast); `/livez` + `/readyz`; graceful shutdown on SIGTERM/SIGINT (not-ready → `Server.Shutdown` with `SHUTDOWN_TIMEOUT` → pool close). |
 | V. Testing Discipline | ✅ Pass | Unit tests for every logic package, table-driven, `-race`; store integration tests on testcontainers PostgreSQL 19 incl. concurrency and migrations up/down/up; API tests per acceptance scenario. |
-| VI. Security & Simplicity | ✅ Pass | All GraphQL args validated in the service before use; env validated at startup; no secrets in repo (`.env` git-ignored, compose uses dev-only credentials); CORS allow-list, `*` rejected unless `APP_ENV=development`; three internal packages as requested, no extra layers; small hand-written CORS and depth-limit code instead of dependencies. |
+| VI. Security & Simplicity | ✅ Pass | All GraphQL args validated in the service before use; env validated at startup; no secrets in repo (`.env` git-ignored, compose uses dev-only credentials); CORS allow-list, `*` rejected unless `APP_ENV=development`; the three requested packages (`graph`, `service`, `store`) plus three small supporting packages (`config`, `httpserver`, `logging`), justified in Complexity Tracking; small hand-written CORS and depth-limit code instead of dependencies. |
 
 **Post-design re-check (after Phase 1)**: ✅ All six principles still pass. Design choices that
 touch the gates: exclusion constraint (III, no extension), joined service type instead of a
 DataLoader (II, justified in R5), custom depth limiter (II, ~50 lines, no dependency), `go tool`
-for sqlc/gqlgen (I, pre-approved tools). Complexity Tracking is empty.
+for sqlc/gqlgen (I, pre-approved tools), three supporting packages beyond the requested layout
+(VI, justified in Complexity Tracking).
 
 ## Project Structure
 
@@ -93,6 +94,7 @@ internal/config/
 └── config_test.go
 
 internal/graph/
+├── generate.go              # `//go:generate go tool gqlgen generate` only
 ├── schema/
 │   └── reservation.graphqls # copied from contracts/schema.graphqls
 ├── generated.go             # gqlgen executable schema (generated, committed)
@@ -104,8 +106,10 @@ internal/graph/
 ├── errors.go                # error presenter (codes, masking), recover func
 ├── depthlimit.go            # max-depth handler extension
 ├── server.go                # builds the gqlgen handler: transports, limits, dev-only introspection
-├── *_test.go                # unit tests (depth limit, error mapping)
-└── api_test.go              # end-to-end GraphQL tests (httptest + testcontainers)
+├── *_test.go                # unit tests (depth limit, error presenter, convert.go mapping)
+├── api_test.go              # end-to-end GraphQL tests (httptest + testcontainers); shared TestMain/harness
+├── perf_test.go             # SC-002 listing performance test (package graph_test)
+└── servicetype_test.go      # SC-005 / FR-004 second-service-type test (package graph_test)
 
 internal/httpserver/
 ├── server.go                # ServeMux: /graphql, /playground (dev), /livez, /readyz
@@ -113,6 +117,7 @@ internal/httpserver/
 └── *_test.go
 
 internal/service/
+├── model.go                 # domain types: ServiceType, Status, Reservation, NewReservation
 ├── reservation.go           # Service: Create, Get, List, Update, Delete; rules from data-model.md
 ├── validate.go              # field validation, collected FieldErrors
 ├── cursor.go                # opaque cursor encode/decode
@@ -121,6 +126,7 @@ internal/service/
 └── *_test.go                # table-driven unit tests with a fake Store
 
 internal/store/
+├── generate.go              # `//go:generate go tool sqlc generate -f sqlc.yaml` only
 ├── migrations/
 │   ├── 000001_create_service_types.up.sql / .down.sql
 │   └── 000002_create_reservations.up.sql / .down.sql
@@ -156,12 +162,14 @@ handler). Dependency direction: `cmd/server` → `httpserver` → `graph` → `s
 
 - **Overlap**: enforced by `reservations_no_overlap` exclusion constraint; store maps SQLSTATE
   `23P01` to `service.ErrSlotConflict` (R2).
-- **Time**: service receives `now func() time.Time`; all comparisons on UTC instants; hourly grid
-  check (minute :00) in service and DB (R3).
+- **Time**: service receives `now func() time.Time` for request validation only (`startsAt` in
+  the future, already started); all comparisons on UTC instants; hourly grid check (minute :00)
+  in service and DB (R3). `created_at`, `updated_at` and `cancelled_at` are always written with
+  PostgreSQL `now()` in SQL, so there is a single source for record timestamps.
 - **Update**: one transaction — `SELECT … FOR UPDATE` (cancelled or missing → not found), apply
   rules against the locked row, recompute `ends_at` when `starts_at` or service type changes,
   `UPDATE … RETURNING` joined row (R10).
-- **Delete**: `UPDATE … SET cancelled_at = $now WHERE id = $1 AND cancelled_at IS NULL
+- **Delete**: `UPDATE … SET cancelled_at = now(), updated_at = now() WHERE id = $1 AND cancelled_at IS NULL
   RETURNING …`; zero rows → not found.
 - **Listing**: keyset on `(starts_at, id)` over the partial index; fetch `limit + 1` rows to compute
   `hasNextPage`/`hasPreviousPage` (R7).
@@ -175,4 +183,12 @@ handler). Dependency direction: `cmd/server` → `httpserver` → `graph` → `s
 
 ## Complexity Tracking
 
-No constitution violations; nothing to justify.
+No constitution violations. The packages below go beyond the requested layout (`cmd/server`,
+`internal/graph`, `internal/service`, `internal/store`) and are justified here as Principle VI
+requires.
+
+| Addition | Why Needed | Simpler Alternative Rejected Because |
+|---|---|---|
+| `internal/config` | Env parsing and fail-fast validation of every variable (Principle IV, R12) is enough logic to need its own table-driven tests (Principle V); `Load(getenv)` takes an injected lookup, so it is testable without touching the process environment. | Inside `cmd/server`: config rules would only be testable through `run`, which needs a database; `package main` is also a poor home for logic that tests in other packages (API harness, T066) want to reuse. |
+| `internal/httpserver` | Mux, health endpoints (`/livez`, `/readyz`) and middleware (request ID, access log, recover, CORS) are HTTP concerns separate from GraphQL execution; CORS allow-listing is a security rule (Principle VI) that needs focused `httptest` tests. | Inside `internal/graph`: mixes transport and GraphQL concerns and makes `graph` depend on config and readiness state. Inside `cmd/server`: untestable without the full process, and the API tests (T029) need to build the same handler stack. |
+| `internal/logging` | The request-ID-aware `slog` handler and its context key are shared: `cmd/server` builds the logger with it, `httpserver` stores the ID in the context, and every layer that logs with `*Context` (e.g. the `graph` error presenter) gets `request_id` through it, as Principle I requires. `graph` tests (T021) and the privacy test (T064) also build loggers with it. | Inside `httpserver`: code and tests outside the HTTP layer would have to import the HTTP package just to build a logger, and the context key would end up owned by a transport package. Inside `cmd/server`: tests can't import it. Duplicating the key would break request-ID propagation. |

@@ -31,9 +31,15 @@ reservation is written (see below).
 | `customer_email` | `text` | `NOT NULL`, `CHECK (length(customer_email) BETWEEN 3 AND 254)` | trimmed; format validated in service |
 | `customer_phone` | `text` | `NOT NULL`, `CHECK (length(customer_phone) BETWEEN 7 AND 40)` | trimmed; digit count validated in service |
 | `service_type` | `text` | `NOT NULL`, FK → `service_types(code)` `ON UPDATE RESTRICT ON DELETE RESTRICT` | |
-| `cancelled_at` | `timestamptz` | `NULL`, `CHECK (cancelled_at IS NULL OR cancelled_at >= created_at)` | `NULL` = active |
-| `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | |
-| `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | set explicitly on every update/cancel |
+| `cancelled_at` | `timestamptz` | `NULL`, `CHECK (cancelled_at IS NULL OR cancelled_at >= created_at)` | `NULL` = active; set to PostgreSQL `now()` on cancel |
+| `created_at` | `timestamptz` | `NOT NULL DEFAULT now()` | never supplied by the service |
+| `updated_at` | `timestamptz` | `NOT NULL DEFAULT now()` | set to PostgreSQL `now()` in the SQL of every update/cancel |
+
+**Time source**: `created_at`, `updated_at` and `cancelled_at` are always written with
+PostgreSQL `now()` inside the SQL statement, never from a value the service passes in, so the
+`cancelled_at >= created_at` check cannot fail because the application and database clocks
+disagree. The service's injected clock is used only to validate requests (`startsAt` in the
+future, "already started" on update).
 
 ### Constraints and indexes
 
@@ -69,7 +75,7 @@ reservation is written (see below).
   Changing `starts_at` or `service_type` recomputes `ends_at`; the exclusion constraint
   re-checks overlap (excluding nothing special: the row's own old range is replaced in the same
   statement, so it never conflicts with itself).
-- **ACTIVE → CANCELLED (delete)**: sets `cancelled_at = now`, `updated_at = now`.
+- **ACTIVE → CANCELLED (delete)**: sets `cancelled_at = now()`, `updated_at = now()` (PostgreSQL clock).
 - **CANCELLED**: terminal. Update and delete return "not found"; fetch-by-ID still returns it.
 - Past, non-cancelled reservations stay `ACTIVE` (no automatic transition).
 
@@ -80,11 +86,11 @@ Applied after trimming; all failures collected and returned together. Codes are 
 
 | Field | Rule | Code |
 |---|---|---|
-| `id` (update/delete) | parses as a UUID | `INVALID_FORMAT` |
+| `id` (fetch/update/delete) | parses as a UUID | `INVALID_FORMAT` (mutations: `ValidationError` in the payload; `reservation(id)` query: `BAD_USER_INPUT`, field `id`) |
 | `customerName` | non-empty | `REQUIRED` |
 | `customerName` | ≤ 200 code points | `TOO_LONG` |
 | `customerEmail` | non-empty | `REQUIRED` |
-| `customerEmail` | ≤ 254 chars | `TOO_LONG` |
+| `customerEmail` | ≤ 254 code points (same count as PostgreSQL `length()`) | `TOO_LONG` |
 | `customerEmail` | `net/mail.ParseAddress` succeeds, parsed address equals input, domain has a dot | `INVALID_FORMAT` |
 | `customerPhone` | non-empty | `REQUIRED` |
 | `customerPhone` | only digits, spaces, `( ) . / -`, optional leading `+`; 7–15 digits | `INVALID_FORMAT` |
@@ -93,8 +99,20 @@ Applied after trimming; all failures collected and returned together. Codes are 
 | `serviceType` | exists and `offered` (on update: only when changed) | `UNKNOWN_SERVICE_TYPE` |
 | `startsAt`, `serviceType` | change attempted on a reservation that already started | `NOT_ALLOWED` |
 
+On update, "changed" means supplied **and** different from the locked row's current value
+(`startsAt` compared as instants, `serviceType` by code, customer fields after trimming). A
+supplied value equal to the current one is treated as omitted: it is not validated and never
+triggers `IN_PAST`, `UNKNOWN_SERVICE_TYPE` or `NOT_ALLOWED`.
+
 Listing arguments: `to` must be after `from` (`BAD_USER_INPUT`, field `to`); `first`/`last`
-in 1–100 and not both; cursors must decode (`BAD_USER_INPUT`, field `after`/`before`).
+in 1–100; cursors must decode (`BAD_USER_INPUT`, field `after`/`before`).
+
+Paging direction: forward arguments are `first`/`after`, backward arguments are `last`/`before`.
+A request may use arguments from one direction only; mixing any forward argument with any
+backward one is `BAD_USER_INPUT`, reported on the backward argument (`last` if set, otherwise
+`before`). The direction is backward when `last` or `before` is set, otherwise forward (also
+when no paging argument is given). A cursor without a page size (`after` alone or `before`
+alone) uses the default page size of 20.
 
 ## Cursor
 

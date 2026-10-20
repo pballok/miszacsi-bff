@@ -82,8 +82,10 @@ by the constitution and is not re-litigated here.
 
 - **Decision**: Relay connection `reservations(from, to, first, after, last, before)` with keyset
   pagination on `(starts_at, id)`. Cursors are base64url-encoded `starts_at` (RFC 3339 nano, UTC)
-  and `id`, treated as opaque by clients. Default page size 20, maximum 100; supplying both
-  `first` and `last` is a validation error. A partial index
+  and `id`, treated as opaque by clients. Default page size 20, maximum 100; forward
+  arguments (`first`/`after`) and backward arguments (`last`/`before`) must not be mixed (validation
+  error on the backward argument); `after` or `before` alone uses the default page size (see
+  data-model.md "Paging direction"). A partial index
   `(starts_at, id) WHERE cancelled_at IS NULL` serves the query.
 - **Rationale**: Keyset pagination is stable under inserts/cancellations and fast on the index
   (SC-002); `id` breaks ties (there are none among active rows today, but there will be once
@@ -112,7 +114,7 @@ by the constitution and is not re-litigated here.
 
 - **Decision** (all applied after trimming whitespace):
   - name: 1–200 characters (counted in Unicode code points).
-  - email: ≤254 characters, accepted by `net/mail.ParseAddress` and equal to the parsed
+  - email: ≤254 characters (counted in Unicode code points, matching PostgreSQL `length()`), accepted by `net/mail.ParseAddress` and equal to the parsed
     `Address` (rejects display-name forms like `Bob <b@x.hu>`), domain contains a dot. Stored as
     trimmed input.
   - phone: matches `^\+?[0-9 ()./-]+$` and contains 7–15 digits.
@@ -120,7 +122,8 @@ by the constitution and is not re-litigated here.
   - serviceType: an existing code with `offered = true` (on update, only checked when it changes;
     a retired type the reservation already has is kept).
   - Update of a reservation whose start has already passed: only name, email and phone may change;
-    supplying `startsAt` or `serviceType` returns `NOT_ALLOWED` for that field.
+    supplying a `startsAt` or `serviceType` different from the current value returns
+    `NOT_ALLOWED` for that field; a supplied value equal to the current one counts as unchanged.
   - All failures are collected (not first-error-only) so every invalid field is reported.
 - **Rationale**: standard library only (Constitution I); collecting all errors satisfies
   acceptance scenarios 1.2 and 3.2.
