@@ -1,0 +1,8 @@
+.git
+.idea
+.claude
+.specify
+specs
+.env
+*.test
+*.out

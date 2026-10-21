@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - errorlint
+    - gosec
+    - bodyclose
+    - noctx
+    - misspell
+    - revive
+  exclusions:
+    # Skips gqlgen (internal/graph/generated.go, internal/graph/model/models_gen.go)
+    # and sqlc (internal/store/db/) output, which carry a "Code generated ... DO NOT EDIT." header.
+    generated: strict
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: strict
