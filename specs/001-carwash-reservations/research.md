@@ -78,21 +78,23 @@ by the constitution and is not re-litigated here.
 - **Alternatives considered**: a `status` column plus `cancelled_at` (two sources of truth needing
   a check constraint to keep them consistent).
 
-## R7. Pagination (FR-005, Constitution II)
+## R7. Bounded listing without pagination (FR-005, Constitution II)
 
-- **Decision**: Relay connection `reservations(from, to, first, after, last, before)` with keyset
-  pagination on `(starts_at, id)`. Cursors are base64url-encoded `starts_at` (RFC 3339 nano, UTC)
-  and `id`, treated as opaque by clients. Default page size 20, maximum 100; forward
-  arguments (`first`/`after`) and backward arguments (`last`/`before`) must not be mixed (validation
-  error on the backward argument); `after` or `before` alone uses the default page size (see
-  data-model.md "Paging direction"). A partial index
+- **Decision**: `reservations(from, to): [Reservation!]!` returns every active reservation whose
+  start is in `[from, to)`, ordered by `(starts_at, id)`, with no paging arguments. The service
+  caps a listing at `MaxListResults = 1000`: the store query uses `LIMIT 1001`, and if 1001 rows
+  come back the service returns `ErrTooManyResults`, which the resolver reports as a GraphQL error
+  with `extensions.code = "TOO_MANY_RESULTS"` (no partial data). The partial index
   `(starts_at, id) WHERE cancelled_at IS NULL` serves the query.
-- **Rationale**: Keyset pagination is stable under inserts/cancellations and fast on the index
-  (SC-002); `id` breaks ties (there are none among active rows today, but there will be once
-  cancelled rows or parallel resources exist). Backward pagination is a reversed query whose rows
-  are flipped before returning.
-- **Alternatives considered**: offset pagination (unstable, slower on deep pages); unpaginated list
-  (violates the constitution).
+- **Rationale**: the frontend lists short periods (a day or a week: at most 168 active hourly
+  slots per week), so one response always fits and a flat list is the simplest contract.
+  Fetching one row beyond the cap detects overflow in the same query, without a separate
+  `COUNT(*)`. Failing instead of truncating means a client never mistakes a partial list for the
+  full one. `id` keeps the order deterministic.
+- **Alternatives considered**: Relay cursor connection (previous design; dropped as needless
+  complexity for these period sizes, constitution v2.0.0); silently truncating at 1000 (a
+  client can't tell the list is incomplete); `COUNT(*)` before the select (an extra query, and the
+  count can change between the two statements).
 
 ## R8. Error model (FR-011, Constitution II)
 
@@ -101,7 +103,8 @@ by the constitution and is not re-litigated here.
     interface implemented by `ValidationError` (`field`, `code`), `NotFoundError` and
     `SlotConflictError`.
   - Queries (`reservation`, `reservations`) report client errors as GraphQL errors with a stable
-    `extensions.code`: `NOT_FOUND`, `BAD_USER_INPUT` (plus `extensions.field`).
+    `extensions.code`: `NOT_FOUND`, `BAD_USER_INPUT` (plus `extensions.field`),
+    `TOO_MANY_RESULTS` (listing matched more than 1000 reservations).
   - Any other error is logged with the request ID and returned to the client as
     `INTERNAL_SERVER_ERROR` with a generic message (gqlgen error presenter + recover func).
 - **Rationale**: Mutation failures are part of normal use and benefit from typed, multi-field
@@ -189,12 +192,12 @@ by the constitution and is not re-litigated here.
 ## R15. Testing strategy
 
 - **Decision**:
-  - Unit (table-driven, `-race`): validation rules, grid check, cursor encode/decode, config
+  - Unit (table-driven, `-race`): validation rules, grid check, listing result cap, config
     parsing, depth limiter, error mapping. The service is tested against a hand-written fake that
     satisfies the store interface the service declares.
   - Integration (testcontainers, `postgres:19`): every sqlc query, exclusion constraint and
     concurrency (parallel creates for the same slot → exactly one success), grid check
-    constraint, pagination in both directions, migrations up → down → up.
+    constraint, listing boundaries and row limit, migrations up → down → up.
   - API end-to-end: `httptest` server with real gqlgen handler + real store on testcontainers,
     covering every acceptance scenario in the spec.
   - One PostgreSQL container per package via `TestMain`; each test gets a fresh database created

@@ -31,9 +31,7 @@
 - Q: Should the API let the frontend ask which service types can be booked? → A: No; the
   frontend keeps its own list of service-type codes; no service-type query in this feature.
 - Q: What happens when a page request mixes forward and backward paging arguments? → A:
-  Mixing forward arguments (page size + "after") with backward ones (page size + "before") is a
-  validation error; an "after" or "before" position alone pages in that direction with the
-  default page size (20).
+  *(Superseded on 2026-10-29: listing is no longer paginated.)*
 - Q: Should customer emails be stored as entered or lowercased? → A: Stored as entered (only
   trimmed); no feature compares emails yet, so the case-insensitive comparison rule is dropped.
 - Q: Should national-format phone numbers be accepted as well as international ones? → A: Yes;
@@ -41,6 +39,13 @@
 - Q: Does a create request that leaves a required field out get a per-field validation error?
   → A: No; "missing" means empty or whitespace-only (per-field `REQUIRED`); a field left out
   entirely is rejected as a malformed request, since all create fields stay required.
+
+### Session 2026-10-29
+
+- Q: Should listing be paginated? → A: No; a listing returns all matching reservations in one
+  response, up to 1000. If more than 1000 active reservations start in the period, the request
+  fails with a "too many results" error and returns no reservations; the frontend asks for a
+  shorter period. (Replaces the earlier forward/backward page-based listing.)
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -99,8 +104,11 @@ and verify exactly the active ones inside it are returned in chronological order
    validation error is returned.
 4. **Given** a deleted reservation inside the requested period, **When** the period is listed,
    **Then** the deleted reservation is not included.
-5. **Given** more reservations in the period than fit in one page, **When** the period is listed,
-   **Then** results are returned in pages and every reservation can be reached by following pages.
+5. **Given** exactly 1000 active reservations in the period, **When** the period is listed,
+   **Then** all 1000 are returned in one response.
+6. **Given** more than 1000 active reservations in the period, **When** the period is listed,
+   **Then** no reservations are returned and a "too many results" error tells the caller to
+   request a shorter period.
 
 ---
 
@@ -162,7 +170,10 @@ listings and its time slot becomes free.
   date/times are always expressed in UTC (`Z` offset); the frontend converts them for display. The hourly
   grid (FR-003) is checked on the absolute instant (UTC), which matches local :00 for any
   whole-hour offset.
-- Very large listing periods: results are paginated rather than returned all at once.
+- Very large listing periods: results are not paginated. Up to 1000 reservations are returned at
+  once; a period with more than 1000 active reservations is rejected with a "too many results"
+  error (no partial list), and the caller must request a shorter period. Cancelled reservations
+  do not count toward the limit.
 - Leading/trailing whitespace in name, email or phone is trimmed before validation; otherwise
   values are stored exactly as entered (email letter case is preserved, e.g. `Anna@Example.HU`
   is returned unchanged).
@@ -192,11 +203,10 @@ listings and its time slot becomes free.
   and can be extended later without changing how reservations are created, listed, updated or
   deleted.
 - **FR-005**: System MUST allow listing all active reservations whose start date/time falls within
-  a requested period (start inclusive, end exclusive), ordered by date/time ascending, with
-  pagination. A reservation that starts before the period is not listed, even if its slot runs
-  into the period. A page request goes either forward (page size and/or "after" position) or
-  backward (page size and/or "before" position); mixing forward and backward arguments is a
-  validation error. A position given without a page size uses the default page size.
+  a requested period (start inclusive, end exclusive), ordered by date/time ascending, in a
+  single response without pagination. A reservation that starts before the period is not listed,
+  even if its slot runs into the period. At most 1000 reservations are returned; if more than
+  1000 match, the request MUST fail with a distinct "too many results" error and return none.
 - **FR-006**: System MUST allow updating any subset of a reservation's fields, applying the same
   validation as creation to the changed fields. A supplied value equal to the current one counts
   as unchanged, so resending a full reservation with only some fields edited is accepted.
@@ -243,7 +253,7 @@ listings and its time slot becomes free.
 - **SC-001**: A valid reservation can be created with a single request and appears in the listing
   for its period immediately afterwards (100% of cases).
 - **SC-002**: Listing a one-week period containing 500 stored reservations (at most 168 of them
-  active, since slots cannot overlap; the rest cancelled) returns the first page in under 1 second,
+  active, since slots cannot overlap; the rest cancelled) returns the full listing in under 1 second,
   measured at the BFF's HTTP endpoint.
 - **SC-003**: 100% of invalid inputs (per FR-003) are rejected with a message naming the offending
   field, and no invalid reservation is ever stored.

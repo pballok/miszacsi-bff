@@ -1,6 +1,5 @@
-# GraphQL contract for 001-carwash-reservations.
-# This file is the design-time contract; at implementation it is copied to
-# internal/graph/schema/reservation.graphqls and gqlgen code is generated from it.
+# GraphQL schema of the BFF: the single source of truth for the API contract.
+# All types live in this one file; gqlgen generates code from it (see gqlgen.yml).
 
 """
 An absolute instant in RFC 3339 format with an explicit offset,
@@ -18,19 +17,12 @@ type Query {
 
   """
   Active reservations whose start time is in [from, to), ordered by start time ascending.
-  Use first/after to page forward or last/before to page backward; forward and
-  backward arguments must not be mixed. Page size defaults to 20 (also when only
-  after or before is given), maximum 100.
-  Errors: BAD_USER_INPUT with extensions.field for an invalid range, page size or cursor.
+  Not paginated: returns every matching reservation, at most 1000.
+  Errors: BAD_USER_INPUT with extensions.field "to" when to is not after from;
+  TOO_MANY_RESULTS when more than 1000 reservations match (nothing is returned;
+  request a shorter period).
   """
-  reservations(
-    from: DateTime!
-    to: DateTime!
-    first: Int
-    after: String
-    last: Int
-    before: String
-  ): ReservationConnection!
+  reservations(from: DateTime!, to: DateTime!): [Reservation!]!
 }
 
 type Mutation {
@@ -69,23 +61,6 @@ type ServiceType {
   code: String!
   displayName: String!
   durationMinutes: Int!
-}
-
-type ReservationConnection {
-  edges: [ReservationEdge!]!
-  pageInfo: PageInfo!
-}
-
-type ReservationEdge {
-  cursor: String!
-  node: Reservation!
-}
-
-type PageInfo {
-  hasNextPage: Boolean!
-  hasPreviousPage: Boolean!
-  startCursor: String
-  endCursor: String
 }
 
 # ---------------------------------------------------------------------------

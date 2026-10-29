@@ -47,7 +47,7 @@ future, "already started" on update).
   `EXCLUDE USING gist (tstzrange(starts_at, ends_at, '[)') WITH &&) WHERE (cancelled_at IS NULL)`
   — enforces FR-009 including simultaneous requests; violation SQLSTATE `23P01` → slot conflict.
 - `reservations_active_starts_at_idx`: `btree (starts_at, id) WHERE cancelled_at IS NULL` —
-  serves period listing and keyset pagination in both directions (FR-005, SC-002).
+  serves period listing in `(starts_at, id)` order (FR-005, SC-002).
 - FK on `service_type` is indexed implicitly enough for this scale (one type); no extra index.
 
 ### Derived fields
@@ -82,7 +82,7 @@ future, "already started" on update).
 ## Validation rules (service layer)
 
 Applied after trimming; all failures collected and returned together. Codes are the
-`ValidationErrorCode` enum in the [GraphQL contract](./contracts/schema.graphqls).
+`ValidationErrorCode` enum in the [GraphQL schema](../../internal/graph/schema/schema.graphqls).
 
 | Field | Rule | Code |
 |---|---|---|
@@ -104,17 +104,12 @@ On update, "changed" means supplied **and** different from the locked row's curr
 supplied value equal to the current one is treated as omitted: it is not validated and never
 triggers `IN_PAST`, `UNKNOWN_SERVICE_TYPE` or `NOT_ALLOWED`.
 
-Listing arguments: `to` must be after `from` (`BAD_USER_INPUT`, field `to`); `first`/`last`
-in 1–100; cursors must decode (`BAD_USER_INPUT`, field `after`/`before`).
+Listing arguments: `to` must be after `from` (`BAD_USER_INPUT`, field `to`). There are no paging
+arguments.
 
-Paging direction: forward arguments are `first`/`after`, backward arguments are `last`/`before`.
-A request may use arguments from one direction only; mixing any forward argument with any
-backward one is `BAD_USER_INPUT`, reported on the backward argument (`last` if set, otherwise
-`before`). The direction is backward when `last` or `before` is set, otherwise forward (also
-when no paging argument is given). A cursor without a page size (`after` alone or `before`
-alone) uses the default page size of 20.
+## Listing limit
 
-## Cursor
-
-Opaque to clients. Encoding: `base64url(starts_at RFC3339Nano UTC + "|" + id)`. Decoding failure
-or a malformed part → `BAD_USER_INPUT`.
+A listing returns at most `MaxListResults = 1000` reservations (active only; cancelled rows do not
+count). The store fetches up to 1001 rows; if it gets 1001, the service returns
+`ErrTooManyResults` and the `reservations` query fails with `extensions.code = "TOO_MANY_RESULTS"`
+and no data. Exactly 1000 matches is still a success.

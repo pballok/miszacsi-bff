@@ -7,7 +7,7 @@
 ## Summary
 
 Expose a schema-first GraphQL API from a Go `net/http` server for creating, fetching, listing
-(paginated by time period), updating and soft-deleting carwash reservations, persisted in
+(by time period, unpaginated, at most 1000 results), updating and soft-deleting carwash reservations, persisted in
 PostgreSQL. The no-overlap rule is enforced by a PostgreSQL exclusion constraint on each active
 reservation's time range, so simultaneous bookings for the same slot cannot both succeed. Service
 types live in a table (only `carwash`, 60 minutes) so new types are a data change. Mutations
@@ -23,7 +23,7 @@ JSON, and exposes the GraphQL playground and introspection only in development. 
 **Primary Dependencies**: gqlgen (GraphQL server + codegen), pgx/v5 + pgxpool, sqlc (codegen,
 `go tool`), golang-migrate (`iofs` source, `pgx/v5` driver), testcontainers-go (postgres
 module, tests only). Everything else is the standard library (`net/http`, `log/slog`,
-`net/mail`, `embed`, `encoding/base64`).
+`net/mail`, `embed`).
 
 **Storage**: PostgreSQL 19; tables `service_types`, `reservations` ([data-model.md](./data-model.md))
 
@@ -35,7 +35,7 @@ for local development
 
 **Project Type**: web service (backend-for-frontend, GraphQL API)
 
-**Performance Goals**: first page of a one-week listing in < 1 s (SC-002); expected load is a
+**Performance Goals**: a one-week listing in < 1 s (SC-002); expected load is a
 handful of staff users
 
 **Constraints**: stateless process; config via env only; no authentication (FR-012) — protected
@@ -52,7 +52,7 @@ at a time); thousands of rows per year including cancelled ones
 | Principle | Status | How the plan complies |
 |---|---|---|
 | I. Modern, Idiomatic Go | ✅ Pass | Go 1.27; only pre-approved dependencies; `context.Context` first on every I/O path; `%w` wrapping, sentinel errors (`service.ErrNotFound`, `ErrSlotConflict`) checked with `errors.Is`; injected `*slog.Logger`; all wiring in `cmd/server/main.go`, no globals; clock injected into the service. |
-| II. Schema-First GraphQL | ✅ Pass | Contract in `contracts/schema.graphqls` → `internal/graph/schema/`; gqlgen generated code committed; Relay connection with `first/after` and `last/before`, opaque cursors; one `<Name>Input` and `<Name>Payload` per mutation; typed `UserError` payloads + `extensions.code` for queries; internal errors masked; complexity + depth limits from env; introspection and playground dev-only. DataLoader: no resolver loads related entities (service type is joined in SQL), so no N+1 exists (R5). |
+| II. Schema-First GraphQL | ✅ Pass | Contract is the single schema file `internal/graph/schema/schema.graphqls`; gqlgen generated code committed; no pagination: `reservations` returns a plain `[Reservation!]!` capped at 1000, overflow → `TOO_MANY_RESULTS` with no partial data (R7); one `<Name>Input` and `<Name>Payload` per mutation; typed `UserError` payloads + `extensions.code` for queries; internal errors masked; complexity + depth limits from env; introspection and playground dev-only. DataLoader: no resolver loads related entities (service type is joined in SQL), so no N+1 exists (R5). |
 | III. PostgreSQL as SSoT | ✅ Pass | Stateless process; service types (runtime-mutable config) in DB; golang-migrate up/down migrations embedded and applied on startup; sqlc + pgx/v5 only; update/delete in one transaction with row lock; PK, FK, `NOT NULL`, check constraints, exclusion constraint and partial index express the invariants. No extensions needed (GiST on `tstzrange` is core). |
 | IV. Containerised by Default | ✅ Pass | Multi-stage Dockerfile → distroless `nonroot`; `compose.yaml` with `bff` + `postgres:19` and named volume `pgdata`; env config validated at startup (fail fast); `/livez` + `/readyz`; graceful shutdown on SIGTERM/SIGINT (not-ready → `Server.Shutdown` with `SHUTDOWN_TIMEOUT` → pool close). |
 | V. Testing Discipline | ✅ Pass | Unit tests for every logic package, table-driven, `-race`; store integration tests on testcontainers PostgreSQL 19 incl. concurrency and migrations up/down/up; API tests per acceptance scenario. |
@@ -75,8 +75,6 @@ specs/001-carwash-reservations/
 ├── research.md          # Phase 0
 ├── data-model.md        # Phase 1
 ├── quickstart.md        # Phase 1
-├── contracts/
-│   └── schema.graphqls  # Phase 1: GraphQL contract
 ├── checklists/
 │   └── requirements.md
 └── tasks.md             # Phase 2 (/speckit-tasks, not created here)
@@ -96,12 +94,12 @@ internal/config/
 internal/graph/
 ├── generate.go              # `//go:generate go tool gqlgen generate` only
 ├── schema/
-│   └── reservation.graphqls # copied from contracts/schema.graphqls
+│   └── schema.graphqls      # the single GraphQL schema file (contract; all types)
 ├── generated.go             # gqlgen executable schema (generated, committed)
 ├── model/
 │   └── models_gen.go        # gqlgen models (generated, committed)
 ├── resolver.go              # Resolver struct: holds service + logger
-├── reservation.resolvers.go # resolvers (gqlgen layout: follow-schema); map service results ↔ GraphQL
+├── schema.resolvers.go      # resolvers (gqlgen layout: follow-schema); map service results ↔ GraphQL
 ├── convert.go               # domain ↔ model conversion, UserError mapping
 ├── errors.go                # error presenter (codes, masking), recover func
 ├── depthlimit.go            # max-depth handler extension
@@ -118,10 +116,9 @@ internal/httpserver/
 
 internal/service/
 ├── model.go                 # domain types: ServiceType, Status, Reservation, NewReservation
-├── reservation.go           # Service: Create, Get, List, Update, Delete; rules from data-model.md
+├── reservation.go           # Service: Create, Get, List, Update, Delete; MaxListResults; rules from data-model.md
 ├── validate.go              # field validation, collected FieldErrors
-├── cursor.go                # opaque cursor encode/decode
-├── errors.go                # ErrNotFound, ErrSlotConflict, ValidationErrors
+├── errors.go                # ErrNotFound, ErrSlotConflict, ErrTooManyResults, ValidationErrors
 ├── store.go                 # Store interface the service depends on (consumer-defined)
 └── *_test.go                # table-driven unit tests with a fake Store
 
@@ -171,8 +168,9 @@ handler). Dependency direction: `cmd/server` → `httpserver` → `graph` → `s
   `UPDATE … RETURNING` joined row (R10).
 - **Delete**: `UPDATE … SET cancelled_at = now(), updated_at = now() WHERE id = $1 AND cancelled_at IS NULL
   RETURNING …`; zero rows → not found.
-- **Listing**: keyset on `(starts_at, id)` over the partial index; fetch `limit + 1` rows to compute
-  `hasNextPage`/`hasPreviousPage` (R7).
+- **Listing**: one query ordered by `(starts_at, id)` over the partial index with
+  `LIMIT MaxListResults + 1` (1001); 1001 rows back → `service.ErrTooManyResults` →
+  `TOO_MANY_RESULTS`, otherwise all rows are returned (R7).
 - **Errors**: service returns `ValidationErrors` / sentinels; `graph` maps them to payload
   `UserError`s (mutations) or `extensions.code` (queries); anything else → logged, masked as
   `INTERNAL_SERVER_ERROR` (R8).

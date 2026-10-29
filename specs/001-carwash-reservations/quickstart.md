@@ -1,7 +1,7 @@
 # Quickstart & Validation: Carwash Reservations
 
 **Feature**: `001-carwash-reservations` | **Plan**: [plan.md](./plan.md) |
-**Contract**: [contracts/schema.graphqls](./contracts/schema.graphqls) |
+**Contract**: [internal/graph/schema/schema.graphqls](../../internal/graph/schema/schema.graphqls) |
 **Data model**: [data-model.md](./data-model.md)
 
 This guide proves the feature works end to end. Each scenario maps to a spec acceptance
@@ -52,9 +52,9 @@ the same instants in UTC, e.g. `endsAt` 11:00 appears as `2030-01-15T10:00:00Z`.
 | 5 | `createReservation` at `11:00` | succeeds (back-to-back) | US1-5 |
 | 6 | Restart: `docker compose restart bff`, then `reservation(id)` for #1 | same details returned | US1 independent test, SC-004 |
 | 7 | Create `09:00`, `15:00` and next day `09:00`; `reservations(from: 08:00, to: 12:00)` | exactly `09:00`, `10:00`, `11:00` in order | US2-1 |
-| 8 | `reservations` for an empty day | `edges: []`, no errors | US2-2 |
+| 8 | `reservations` for an empty day | `reservations: []`, no errors | US2-2 |
 | 9 | `reservations` with `to` before `from` | GraphQL error `BAD_USER_INPUT`, `field: "to"` | US2-3 |
-| 10 | `reservations(first: 2)` over #7's range, then `after: endCursor` | pages of 2 then 1; `hasNextPage` true then false | US2-5 |
+| 10 | Seed 1001 active reservations on consecutive hours from `2031-01-01T00:00:00Z` with SQL (`docker compose exec postgres psql …`, `generate_series`); list the first 1000 hours, then all 1001 | 1000 reservations; then GraphQL error `TOO_MANY_RESULTS`, `data: null` | US2-5, US2-6 |
 | 11 | `updateReservation` #1: `startsAt: 13:00`, `customerPhone: "+36 30 123 4567"` | new values; other fields unchanged; `endsAt` 14:00; `updatedAt` advanced | US3-1 |
 | 12 | `updateReservation` with `customerEmail: "bad"` | `ValidationError`; stored row unchanged | US3-2 |
 | 13 | `updateReservation` with an unknown UUID | `NotFoundError` | US3-3 |
@@ -86,5 +86,5 @@ mutation {
 ## Performance check (SC-002)
 
 With 60-minute slots and no overlap, one week holds at most 168 active reservations, so the
-integration suite seeds 500 rows in one week (168 active, 332 cancelled) and asserts that the first
-page of `reservations` for that week returns in under 1 second through the HTTP handler.
+integration suite seeds 500 rows in one week (168 active, 332 cancelled) and asserts that the
+`reservations` listing for that week returns in under 1 second through the HTTP handler.

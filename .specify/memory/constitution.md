@@ -1,29 +1,28 @@
 <!--
 Sync Impact Report
 ==================
-Version change: (unversioned template) → 1.0.0
-Bump rationale: initial ratification; all placeholders replaced with project-specific content.
+Version change: 1.0.0 → 2.0.0
+Bump rationale: MAJOR — Principle II's list-field rule is redefined incompatibly: the mandatory
+Relay-style cursor pagination is removed; list fields now return plain lists with a hard
+maximum and fail with a typed error when it is exceeded.
 
-Modified principles (template placeholder → new title):
-- [PRINCIPLE_1_NAME] → I. Modern, Idiomatic Go
-- [PRINCIPLE_2_NAME] → II. Schema-First GraphQL
-- [PRINCIPLE_3_NAME] → III. PostgreSQL as the Single Source of Truth
-- [PRINCIPLE_4_NAME] → IV. Containerised by Default
-- [PRINCIPLE_5_NAME] → V. Testing Discipline
+Modified principles:
+- II. Schema-First GraphQL — "Relay-style cursor connections" bullet replaced by "no pagination,
+  bounded plain lists"; rationale no longer cites pagination.
+- III. PostgreSQL as the Single Source of Truth — index bullet says "orderings" instead of
+  "pagination orderings".
 
-Added sections:
-- VI. Security and Simplicity (sixth principle, user requested six)
-- Technology Stack & Constraints (was [SECTION_2_NAME])
-- Development Workflow & Quality Gates (was [SECTION_3_NAME])
-- Governance (filled in: amendment, versioning, compliance review)
-
+Added sections: none
 Removed sections: none
 
-Templates reviewed (not modified by this command; they read the constitution at runtime):
+Templates reviewed (not modified; they read the constitution at runtime):
 - .specify/templates/plan-template.md — "Constitution Check" gate derives its gates from this file ✅
 - .specify/templates/spec-template.md — no constitution-specific content to align ✅
-- .specify/templates/tasks-template.md — "tests optional" default is consistent with
-  Principle V (TDD not required, but tests required before merge) ✅
+- .specify/templates/tasks-template.md — no pagination-specific content ✅
+
+Follow-up for existing work: specs/001-carwash-reservations (spec, plan, research, data-model,
+quickstart, tasks) and the implemented GraphQL schema updated to the bounded-list rule in the
+same change.
 
 Deferred TODOs: none
 -->
@@ -68,8 +67,11 @@ and safe to cancel; tooling-enforced style removes review noise.
   first; resolver and model code MUST be generated from it with gqlgen. Generated code MUST NOT be
   edited by hand and MUST be regenerated and committed in the same change as the schema edit.
 - The API MUST conform to the GraphQL specification (October 2021 edition).
-- List fields that can grow unbounded MUST use Relay-style cursor connections
-  (`Connection` / `Edge` / `PageInfo`, `first`/`after`, `last`/`before`) with opaque cursors.
+- List fields MUST NOT be paginated: they return a plain list (`[Type!]!`), not a connection.
+  Every list field that can grow MUST have a documented maximum result count (default 1000); when
+  more items match, the field MUST return no items and fail with a typed, client-actionable error
+  (stable `extensions.code`, e.g. `TOO_MANY_RESULTS`) instead of silently truncating. Clients
+  narrow the request (e.g. a shorter period) to get under the limit.
 - Every mutation MUST take a single dedicated input type (`<MutationName>Input`) and return a
   dedicated payload type.
 - Expected, client-actionable failures (validation, not-found, conflict, unauthorized) MUST be
@@ -83,7 +85,7 @@ and safe to cancel; tooling-enforced style removes review noise.
 - Breaking schema changes (removing/renaming fields, tightening nullability, changing argument
   types) MUST go through `@deprecated` first and be coordinated with the frontend.
 
-**Rationale**: a schema-first contract lets frontend and backend evolve in parallel; pagination,
+**Rationale**: a schema-first contract lets frontend and backend evolve in parallel; bounded lists,
 batching, and limits keep the API predictable and safe under real client usage.
 
 ### III. PostgreSQL as the Single Source of Truth
@@ -100,7 +102,7 @@ batching, and limits keep the API predictable and safe under real client usage.
 - Any write that touches more than one row or table as a logical unit MUST run in a single
   transaction.
 - Tables MUST declare primary keys, `NOT NULL` where applicable, foreign keys, unique and check
-  constraints that express domain invariants, and indexes supporting the queries and pagination
+  constraints that express domain invariants, and indexes supporting the queries and
   orderings actually used.
 
 **Rationale**: one authoritative, constraint-enforced store with reviewable, reversible
@@ -207,4 +209,4 @@ Replacing any mandated choice is a constitutional amendment (see Governance).
 - **Periodic review**: the constitution SHOULD be reviewed when a new Go or PostgreSQL major/minor
   release ships, or at least every six months, to keep the mandated stack current.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-18 | **Last Amended**: 2026-10-18
+**Version**: 2.0.0 | **Ratified**: 2026-10-18 | **Last Amended**: 2026-10-29

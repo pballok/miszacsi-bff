@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      # Dev-only credentials.
+      POSTGRES_USER: miszacsi
+      POSTGRES_PASSWORD: miszacsi
+      POSTGRES_DB: miszacsi
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "miszacsi", "-d", "miszacsi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  bff:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://miszacsi:miszacsi@postgres:5432/miszacsi?sslmode=disable
+      APP_ENV: development
+      CORS_ALLOWED_ORIGINS: http://localhost:5173
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata: {}
